@@ -20,6 +20,9 @@ type SenderApp struct {
 	window    fyne.Window
 	image     *canvas.Image
 	filename  string
+	origName  string
+	startBtn  *widget.Button
+	stopBtn   *widget.Button
 	chunkProc *chunk.Processor
 	qrEnc     *qr.Encoder
 	qrConfig  qr.Config
@@ -62,11 +65,11 @@ func (s *SenderApp) setupUI() {
 
 	selectBtn := widget.NewButton("Select File", s.selectFile)
 
-	startBtn := widget.NewButton("Start Transfer", s.startTransfer)
-	startBtn.Disable()
+	s.startBtn = widget.NewButton("Start Transfer", s.startTransfer)
+	s.startBtn.Disable()
 
-	stopBtn := widget.NewButton("Stop Transfer", s.stopTransfer)
-	stopBtn.Disable()
+	s.stopBtn = widget.NewButton("Stop Transfer", s.stopTransfer)
+	s.stopBtn.Disable()
 
 	s.status = widget.NewLabel("No file selected")
 
@@ -102,8 +105,8 @@ func (s *SenderApp) setupUI() {
 		redundancySelect,
 		widget.NewLabel("Refresh Rate (seconds):"),
 		rateSlider,
-		startBtn,
-		stopBtn,
+		s.startBtn,
+		s.stopBtn,
 		s.status,
 	)
 
@@ -126,10 +129,17 @@ func (s *SenderApp) selectFile() {
 			return
 		}
 		if reader == nil {
+			s.status.SetText("No file selected")
 			return
 		}
 
-		s.filename = reader.URI().Name()
+		uri := reader.URI()
+		s.filename = uri.String()
+		if uri.Scheme() == "file" {
+			s.filename = uri.Path()
+		}
+		s.origName = uri.Name()
+		s.status.SetText("Selected: " + s.origName)
 		reader.Close()
 
 		s.loadFile()
@@ -151,7 +161,7 @@ func (s *SenderApp) loadFile() {
 	}
 
 	s.metadata = chunk.FileMetadata{
-		Filename:   s.filename,
+		Filename:   s.origName,
 		FileSize:   uint64(fileInfo.Size()),
 		ChunkSize:  uint32(s.chunkProc.Config().ChunkSize),
 		Timestamp:  uint64(time.Now().UnixNano()),
@@ -170,6 +180,7 @@ func (s *SenderApp) loadFile() {
 	s.chunks = chunks
 	s.currentChunk = 0
 	s.totalChunks = s.metadata.TotalChunks
+	s.startBtn.Enable()
 
 	s.image.Image = s.createPlaceholderImage()
 	s.image.Refresh()
@@ -181,16 +192,33 @@ func (s *SenderApp) startTransfer() {
 	}
 
 	s.running = true
+	fyne.DoAndWait(func() {
+		s.startBtn.Disable()
+		s.stopBtn.Enable()
+		s.status.SetText("Transfer running...")
+	})
 	s.displayCurrentChunk()
 }
 
 func (s *SenderApp) stopTransfer() {
 	s.running = false
+	fyne.DoAndWait(func() {
+		s.stopBtn.Disable()
+		s.startBtn.Enable()
+		s.status.SetText("Transfer stopped")
+	})
 }
 
 func (s *SenderApp) displayCurrentChunk() {
 	if !s.running || s.currentChunk > s.totalChunks {
 		s.running = false
+		fyne.DoAndWait(func() {
+			s.stopBtn.Disable()
+			s.startBtn.Enable()
+			if s.currentChunk > s.totalChunks {
+				s.status.SetText("Transfer complete!")
+			}
+		})
 		return
 	}
 
@@ -231,18 +259,30 @@ func (s *SenderApp) displayCurrentChunk() {
 	blocks := s.qrEnc.Encode(serialized)
 
 	img := s.qrEnc.CreateImage(blocks, 400, 400)
-	s.image.Image = img
-	s.image.Refresh()
+
+	fyne.DoAndWait(func() {
+		s.image.Image = img
+		s.image.Refresh()
+	})
 
 	s.currentChunk++
 
 	if s.currentChunk > s.totalChunks+1 {
 		s.running = false
-		s.status.SetText("Transfer complete!")
+		fyne.DoAndWait(func() {
+			s.stopBtn.Disable()
+			s.startBtn.Enable()
+			s.status.SetText("Transfer complete!")
+		})
 		return
 	}
 
-	time.AfterFunc(s.refreshRate, s.displayCurrentChunk)
+	go func() {
+		time.Sleep(s.refreshRate)
+		if s.running {
+			s.displayCurrentChunk()
+		}
+	}()
 }
 
 func (s *SenderApp) createPlaceholderImage() image.Image {
